@@ -1,0 +1,3 @@
+/.vagrant
+/app
+/puppet/environments/development/modules
