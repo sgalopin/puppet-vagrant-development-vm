@@ -1,15 +1,47 @@
 # -*- mode: ruby -*-
 # vi: set ft=ruby :
 
+# !!!!!!!!!!!!!!!!!!!!!!! IMPORTANT !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+# !! The following parameters must be set before the vagrant up. !!
+# !!!!!!!!!!!!!!!!!!!!!!! IMPORTANT !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
-#########################
-# Vagrantfile variables #
-#########################
-
-sources_path_on_guest = "/root/tmp/ogam/sources"
+# app_sources_path_on_guest:
+#  - Path of the directory on the guest generated per the "git clone" command.
+#  - That path must contain the ".git" directory and your application sources used for the installation.
+app_sources_path_on_guest = "/root/tmp/ogam/sources"
+# app_scripts_path_on_guest:
+#  - Path of the directory on the guest containing the tasks's scripts.
+#  - That scripts can be generated per puppet from templates.
+app_scripts_path_on_guest = "/root/tmp/ogam/scripts"
+# app_module_short_name:
+#  - Set "mymodule" for a puppet module named "mypuppetuser_mymodule".
 app_module_short_name = "ogam"
-dev_branch_name = "development"
+# branch_name: ["production", "development", "feature_*", ...]
+#  - Before using it, you may have to create the corresponding branch into the control repositoy, the application module repository, the tasks...
+#  - If the branch is unknow the "production" branch will be used per default.
+branch_name = "development"
+# deploy_type: ["puppetfile", "control_repository"]
+#  - "puppetfile" option:
+#    - Prefered option for development or for those who don't have access to a control repository.
+#    - Check that the "branch_name" variable and the ":branch" attribute of your application module are matching.
+#    - Check that "./puppet/agent-pos-sa-dev.example.com.pp" file exist and is properly configured
+#    - That option can be configured via the ./puppet/Puppetfile file.
+#  - "control_repository" option:
+#    - Prefered option for production or for those who have access to a control repository.
+#    - Check that the branch set per the "branch_name" variable exist into your control repository.
+#    - Check that "manifests/agent-pos-sa-dev.example.com.pp" file exist and is properly configured into your control repository branch.
+#    - That option can be configured via the ./puppet/r10k.yaml file.
+deploy_type = "puppetfile"
+# task_runner: ["shell", "bolt"]
+#  - "shell" option:
+#    - Prefered option for development because it's more verbose and quicker.
+#    - Runs the scripts in "app_scripts_path_on_guest" with the root user. You must be sure that the scripts are safe before using it.
+#  - "bolt" option:
+#    - Prefered option for production or for modules without scripts.
+#    - It is the official manner to launch Puppet tasks but it is slower too.
+task_runner = "shell"
 
+# !!!!!!!!!!!!!!!!!!!!!!! IMPORTANT !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
 # All Vagrant configuration is done below. The "2" in Vagrant.configure
 # configures the configuration version (we support older styles for
@@ -53,8 +85,8 @@ Vagrant.configure("2") do |config|
 
   # disable the default root
   config.vm.synced_folder ".", "/vagrant", disabled: true
-  config.vm.synced_folder "./puppet/environments/#{dev_branch_name}/modules", "/etc/puppetlabs/code/environments/#{dev_branch_name}/modules", create: true
-  config.vm.synced_folder "./app", sources_path_on_guest, create: true
+  config.vm.synced_folder "./puppet/environments", "/etc/puppetlabs/code/environments", create: true
+  config.vm.synced_folder "./app", app_sources_path_on_guest, create: true
 
   # Provider-specific configuration so you can fine-tune various
   # backing providers for Vagrant. These expose provider-specific options.
@@ -90,43 +122,67 @@ Vagrant.configure("2") do |config|
   #   apt-get update
   #   apt-get install -y apache2
   # SHELL
-  config.vm.provision "shell", privileged: true, inline: <<-SHELL
+  config.vm.provision "shell", privileged: false, inline: <<-SHELL
     # Puppet package
     # https://puppet.com/docs/puppet/5.3/puppet_platform.html
     wget -r -O /var/tmp/puppet.deb https://apt.puppetlabs.com/puppet5-release-stretch.deb
-    dpkg -i /var/tmp/puppet.deb
+    sudo dpkg -i /var/tmp/puppet.deb
 
     # Apt update and upgrade
-    apt-get update
-    DEBIAN_FRONTEND=noninteractive apt-get -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" upgrade
+    sudo apt-get update
+    sudo DEBIAN_FRONTEND=noninteractive apt-get -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" upgrade
 
     # Puppet and git install
-    apt-get install -y puppet-agent git-core
+    sudo apt-get install -y puppet-agent git-core
     export PATH=/opt/puppetlabs/bin:$PATH
 
     # r10k and bolt install
-    /opt/puppetlabs/puppet/bin/gem install r10k
-    /opt/puppetlabs/puppet/bin/gem install bolt
+    sudo /opt/puppetlabs/puppet/bin/gem install r10k
+    sudo /opt/puppetlabs/puppet/bin/gem install bolt
 
-    # ssh configuration for bolt
-    ssh-keygen -t rsa -b 4096
+    # ssh configuration for vagrant user (required per bolt)
+    ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N ''
+    touch ~/.ssh/known_hosts
     ssh-keyscan -H -t rsa localhost,::1 >> ~/.ssh/known_hosts
     cat ~/.ssh/id_rsa.pub >> ~/.ssh/authorized_keys
   SHELL
 
   # Provisions for the "r10k.yaml" file
-  config.vm.provision "file", source: "./puppet/r10k.yaml", destination: "/var/tmp/r10k.yaml"
-  config.vm.provision "shell", privileged: true, inline: <<-SHELL
-    mkdir /etc/puppetlabs/r10k
-    mv /var/tmp/r10k.yaml /etc/puppetlabs/r10k/r10k.yaml
-    chown root:root /etc/puppetlabs/r10k/r10k.yaml
-  SHELL
+  if deploy_type == "control_repository"
+    config.vm.provision "file", source: "./puppet/r10k.yaml", destination: "/var/tmp/r10k.yaml"
+    config.vm.provision "shell", privileged: true, inline: <<-SHELL
+      # The "r10k.yaml" must be placed into the "/etc/puppetlabs/r10k" directory.
+      mkdir /etc/puppetlabs/r10k
+      mv /var/tmp/r10k.yaml /etc/puppetlabs/r10k/r10k.yaml
+      chown root:root /etc/puppetlabs/r10k/r10k.yaml
+    SHELL
+  end
+
+  # Provisions for the "Puppetfile" file
+  if deploy_type == "puppetfile"
+    config.vm.provision "file", source: "./puppet/Puppetfile", destination: "/var/tmp/Puppetfile"
+    config.vm.provision "shell", privileged: true, args: [branch_name], inline: <<-SHELL
+      # The "Puppetfile" can be placed in any directory.
+      mkdir -p /etc/puppetlabs/r10k
+      mv /var/tmp/Puppetfile /etc/puppetlabs/r10k/Puppetfile
+      chown root:root /etc/puppetlabs/r10k/Puppetfile
+    SHELL
+  end
 
   # Provision "deploy" to deploy the puppet code environments
-  config.vm.provision "deploy", type: "shell", privileged: true, args: [dev_branch_name, app_module_short_name], inline: <<-SHELL
-    /opt/puppetlabs/puppet/bin/r10k deploy environment -pv
-    git -C /etc/puppetlabs/code/environments/$1/modules/$2 fetch origin
-    git -C /etc/puppetlabs/code/environments/$1/modules/$2 rev-parse --verify $1
+  config.vm.provision "deploy", type: "shell", privileged: true, args: [branch_name, app_module_short_name, deploy_type], inline: <<-SHELL
+    if [ "$3" = "control_repository" ]; then
+      /opt/puppetlabs/puppet/bin/r10k deploy environment -pv
+    else
+      /opt/puppetlabs/puppet/bin/r10k puppetfile install \
+      --puppetfile /etc/puppetlabs/r10k/Puppetfile \
+      --moduledir /etc/puppetlabs/code/environments/$1/modules
+    fi
+    # Checkout on the current branch
+    # Removes the "alternates" file containing r10k's cache path on the guest which one is not accessible on the host and generate git errors.
+    rm /etc/puppetlabs/code/environments/$1/modules/$2/.git/objects/info/alternates
+    git -C /etc/puppetlabs/code/environments/$1/modules/$2 fetch origin 2> /dev/null
+    git -C /etc/puppetlabs/code/environments/$1/modules/$2 show-ref --verify --quiet refs/heads/$1
     if [ $? = 0 ]; then # The local branch already exists
       git -C /etc/puppetlabs/code/environments/$1/modules/$2 checkout $1
     else
@@ -134,19 +190,37 @@ Vagrant.configure("2") do |config|
     fi
   SHELL
 
-  # Provision "apply" to apply the init.pp manifest
-  # https://www.vagrantup.com/docs/provisioning/puppet_apply.html
-  config.vm.provision "apply", type: "puppet" do |puppet|
-    puppet.environment_path = "./puppet/environments"
-    puppet.environment = dev_branch_name
+  # Provisions for the "agent-pos-sa-dev.example.com.pp" file
+  if deploy_type == "puppetfile"
+    config.vm.provision "file", source: "./puppet/agent-pos-sa-dev.example.com.pp", destination: "/var/tmp/agent-pos-sa-dev.example.com.pp"
+    config.vm.provision "shell", privileged: true, args: [branch_name], inline: <<-SHELL
+      # The "agent-pos-sa-dev.example.com.pp" must be placed in the "/etc/puppetlabs/code/environments/$1/manifests" directory.
+      mkdir -p /etc/puppetlabs/code/environments/$1/manifests
+      mv /var/tmp/agent-pos-sa-dev.example.com.pp /etc/puppetlabs/code/environments/$1/manifests/agent-pos-sa-dev.example.com.pp
+      chown root:root /etc/puppetlabs/code/environments/$1/manifests/agent-pos-sa-dev.example.com.pp
+    SHELL
   end
+
+  # Provision "apply" to run a puppet apply
+  config.vm.provision "apply", type: "shell", privileged: true, args: [branch_name], inline: <<-SHELL
+  	# sudo -i puppet apply -e "class {'my_class': }"
+  	puppet apply --environment $1 /etc/puppetlabs/code/environments/$1/manifests/agent-pos-sa-dev.example.com.pp
+  SHELL
 
   # Provision "tasks" to launch the predefined tasks
   # https://puppet.com/docs/bolt/0.x/running_tasks_and_plans_with_bolt.html
-  config.vm.provision "tasks", type: "shell", privileged: true, args: [dev_branch_name, app_module_short_name], inline: <<-SHELL
-    #/opt/puppetlabs/puppet/bin/bolt task show $2 --modulepath /etc/puppetlabs/code/environments/$1/modules
-    #/opt/puppetlabs/puppet/bin/bolt [task_parameter_1=value_1 task_parameter_2=value_2...] -n localhost --modulepath /etc/puppetlabs/code/environments/$1/modules --run-as root
-    /opt/puppetlabs/puppet/bin/bolt plan run $2 nodes=localhost environment=$1 --modulepath /etc/puppetlabs/code/environments/$1/modules --run-as root
+  config.vm.provision "tasks", type: "shell", privileged: false, args: [branch_name, app_module_short_name, task_runner, app_scripts_path_on_guest], inline: <<-SHELL
+    if [ "$3" = "bolt" ]; then
+      # Bolt use vagrant for the ssh connection
+      # /opt/puppetlabs/puppet/bin/bolt task show $2 --modulepath /etc/puppetlabs/code/environments/$1/modules
+      # /opt/puppetlabs/puppet/bin/bolt task run $2 [task_parameter_1=value_1 task_parameter_2=value_2...] -n localhost --modulepath /etc/puppetlabs/code/environments/$1/modules --run-as root
+      /opt/puppetlabs/puppet/bin/bolt plan run $2 nodes=localhost environment=$1 --modulepath /etc/puppetlabs/code/environments/$1/modules --run-as root
+    else
+      # If the tasks are independent of each other
+      # sudo /bin/bash -c 'for file in $0/*; do /bin/bash $file -e $1; done' $4 $1
+      # If the module provide a tasks plan
+      sudo /bin/bash $4/tasks_plan.sh -e $1
+    fi
   SHELL
 
 end
