@@ -8,7 +8,7 @@
 # app_sources_path_on_guest:
 #  - Path of the directory on the guest generated per the "git clone" command.
 #  - That path must contain the ".git" directory and your application sources used for the installation.
-app_sources_path_on_guest = "/root/tmp/ogam/sources"
+app_sources_path_on_guest = "/var/www/ogam"
 # app_scripts_path_on_guest:
 #  - Path of the directory on the guest containing the tasks's scripts.
 #  - That scripts can be generated per puppet from templates.
@@ -39,7 +39,28 @@ deploy_type = "puppetfile"
 #  - "bolt" option:
 #    - Prefered option for production or for modules without scripts.
 #    - It is the official manner to launch Puppet tasks but it is slower too.
+#    - That option can be configured via the ./puppet/bolt.yml file.
 task_runner = "shell"
+# excluded_dirs:
+#   - Exclude directories of the synchronized folders.
+#   - The first path is the local path (on the guest).
+#   - The second path is the shared path (on the guest).
+excluded_dirs = [[ # server vendor dir
+  '/home/vagrant/ogam/server/vendor',
+  app_sources_path_on_guest + '/website/htdocs/server/ogamServer/vendor'
+],[ # server cache dir
+  '/home/vagrant/ogam/server/app/cache',
+  app_sources_path_on_guest + '/website/htdocs/server/ogamServer/app/cache'
+],[ # server logs dir
+  '/home/vagrant/ogam/server/app/logs',
+  app_sources_path_on_guest + '/website/htdocs/server/ogamServer/app/logs'
+],[ # server sessions dir
+  '/home/vagrant/ogam/server/app/sessions',
+  app_sources_path_on_guest + '/website/htdocs/server/ogamServer/app/sessions'
+],[ # client build dir
+  '/home/vagrant/ogam/client/build',
+  app_sources_path_on_guest + '/website/htdocs/client/build'
+]]
 
 # !!!!!!!!!!!!!!!!!!!!!!! IMPORTANT !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
@@ -86,7 +107,7 @@ Vagrant.configure("2") do |config|
   # disable the default root
   config.vm.synced_folder ".", "/vagrant", disabled: true
   config.vm.synced_folder "./puppet/environments", "/etc/puppetlabs/code/environments", create: true
-  config.vm.synced_folder "./app", app_sources_path_on_guest, create: true
+  config.vm.synced_folder "./app", app_sources_path_on_guest, create: true, owner:"www-data", group: "www-data", :mount_options => ["dmode=777","fmode=777"]
 
   # Provider-specific configuration so you can fine-tune various
   # backing providers for Vagrant. These expose provider-specific options.
@@ -207,6 +228,26 @@ Vagrant.configure("2") do |config|
   	puppet apply --environment $1 /etc/puppetlabs/code/environments/$1/manifests/agent-pos-sa-dev.example.com.pp
   SHELL
 
+  # Provisions for the excluded dirs
+  # Must be place after the git clone of the application source code.
+  excluded_dirs.each do |exclude_dir|
+  config.vm.provision "shell", run:"always", path: "./vagrant-shell/exclude_synced_folder.sh",
+    args: [
+      exclude_dir[0], # local path
+      exclude_dir[1] # shared path
+    ]
+  end
+
+  # Provisions for the "bolt.yml" file
+  if task_runner == "bolt"
+    config.vm.provision "file", source: "./puppet/bolt.yml", destination: "/var/tmp/bolt.yml"
+    config.vm.provision "shell", privileged: false, inline: <<-SHELL
+      # The "bolt.yml" must be placed in the "~/.puppetlabs" directory.
+      mkdir -p ~/.puppetlabs
+      mv /var/tmp/bolt.yml ~/.puppetlabs/bolt.yml
+    SHELL
+  end
+
   # Provision "tasks" to launch the predefined tasks
   # https://puppet.com/docs/bolt/0.x/running_tasks_and_plans_with_bolt.html
   config.vm.provision "tasks", type: "shell", privileged: false, args: [branch_name, app_module_short_name, task_runner, app_scripts_path_on_guest], inline: <<-SHELL
@@ -214,7 +255,7 @@ Vagrant.configure("2") do |config|
       # Bolt use vagrant for the ssh connection
       # /opt/puppetlabs/puppet/bin/bolt task show $2 --modulepath /etc/puppetlabs/code/environments/$1/modules
       # /opt/puppetlabs/puppet/bin/bolt task run $2 [task_parameter_1=value_1 task_parameter_2=value_2...] -n localhost --modulepath /etc/puppetlabs/code/environments/$1/modules --run-as root
-      /opt/puppetlabs/puppet/bin/bolt plan run $2 nodes=localhost environment=$1 --modulepath /etc/puppetlabs/code/environments/$1/modules --run-as root
+      /opt/puppetlabs/puppet/bin/bolt plan run $2 nodes=localhost --run-as root
     else
       # If the tasks are independent of each other
       # sudo /bin/bash -c 'for file in $0/*; do /bin/bash $file -e $1; done' $4 $1

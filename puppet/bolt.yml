@@ -1,0 +1,9 @@
+# https://puppet.com/docs/bolt/0.x/bolt_configuration_options.html
+modulepath: "/etc/puppetlabs/code/environments/development/modules"
+concurrency: 10
+format: human
+ssh:
+  insecure: true
+  private-key: ~/.ssh/id_rsa
+pcp:
+  task-environment: development
